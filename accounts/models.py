@@ -7,6 +7,29 @@ from django.db import models
 from django.utils import timezone
 
 
+# Business type choices
+class BusinessTypes(models.TextChoices):
+    SOLE_PROPRIETORSHIP = "SOLE_PROPRIETORSHIP", "Sole Proprietorship"
+    PARTNERSHIP = "PARTNERSHIP", "Partnership"
+    LLC = "LLC", "LLC"
+    CORPORATION = "CORPORATION", "Corporation"
+    OTHER = "OTHER", "Other"
+
+
+# Industry choices
+class Industries(models.TextChoices):
+    RETAIL = "RETAIL", "Retail"
+    FOOD_SERVICE = "FOOD_SERVICE", "Food Service"
+    MANUFACTURING = "MANUFACTURING", "Manufacturing"
+    TECHNOLOGY = "TECHNOLOGY", "Technology"
+    HEALTHCARE = "HEALTHCARE", "Healthcare"
+    FINANCE = "FINANCE", "Finance"
+    REAL_ESTATE = "REAL_ESTATE", "Real Estate"
+    CONSTRUCTION = "CONSTRUCTION", "Construction"
+    EDUCATION = "EDUCATION", "Education"
+    OTHER = "OTHER", "Other"
+
+
 # Role choices for users
 class UserRoles(models.TextChoices):
     ADMIN = "admin", "Admin"
@@ -17,9 +40,39 @@ class UserRoles(models.TextChoices):
 
 # Each business has its own users (multi-tenancy)
 class Business(models.Model):
+    # Basic Info
     name = models.CharField(max_length=255)
-    address = models.TextField(blank=True)
+    legal_name = models.CharField(max_length=255, blank=True, null=True)
+    business_type = models.CharField(
+        max_length=50, choices=BusinessTypes.choices, default=BusinessTypes.LLC
+    )
+    industry = models.CharField(
+        max_length=50, choices=Industries.choices, default=Industries.RETAIL
+    )
+
+    # Contact Details
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+
+    # Address - Expanded from a simple text field to structured data
+    address = models.CharField(max_length=255, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    zip_code = models.CharField(max_length=20, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+
+    # Tax Information
+    tax_id = models.CharField(max_length=50, blank=True, null=True)
+    fiscal_year_end = models.DateField(blank=True, null=True)
+
+    # Settings
+    currency_code = models.CharField(max_length=3, default="NPR")
+    timezone = models.CharField(max_length=50, default="UTC")
+    is_active = models.BooleanField(default=True)
+
+    # Meta
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.name

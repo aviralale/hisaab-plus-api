@@ -1,7 +1,9 @@
 from rest_framework import serializers
 from .models import Category, Supplier, Product, StockEntry, Sale, SaleItem
+from decimal import Decimal
 
 
+# The original serializers remain unchanged
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
@@ -132,14 +134,78 @@ class SaleCreateSerializer(serializers.ModelSerializer):
         return sale
 
 
+class RecentSaleSerializer(serializers.Serializer):
+    """Serializer for recent sales on dashboard"""
+
+    id = serializers.IntegerField()
+    customer = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    status = serializers.CharField()
+    sale_date = serializers.DateTimeField()
+
+
+class LowStockProductSerializer(serializers.Serializer):
+    """Serializer for low stock products on dashboard"""
+
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    sku = serializers.CharField()
+    stock = serializers.IntegerField()
+    reorder_level = serializers.IntegerField()
+
+
+class MonthlySalesDataSerializer(serializers.Serializer):
+    """Serializer for monthly sales data for charts"""
+
+    name = serializers.CharField()  # Month name
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
 class DashboardStatsSerializer(serializers.Serializer):
     """Serializer for dashboard statistics"""
 
+    # Basic stats
+    business_name = serializers.CharField()
     total_products = serializers.IntegerField()
-    low_stock_products = serializers.IntegerField()
+    low_stock_count = serializers.IntegerField()
     out_of_stock_products = serializers.IntegerField()
     total_suppliers = serializers.IntegerField()
     total_categories = serializers.IntegerField()
+
+    # Financial metrics
     sales_today = serializers.DecimalField(max_digits=12, decimal_places=2)
+    sales_yesterday = serializers.DecimalField(max_digits=12, decimal_places=2)
     sales_this_month = serializers.DecimalField(max_digits=12, decimal_places=2)
     inventory_value = serializers.DecimalField(max_digits=12, decimal_places=2)
+    percentage_increase_from_yesterday = serializers.FloatField()
+    percentage_increase_from_24h_ago = serializers.FloatField()
+    percentage_increase_from_30_days_ago = serializers.FloatField()
+
+    # Nested data for charts and tables
+    recent_sales = RecentSaleSerializer(many=True)
+    low_stock_products = LowStockProductSerializer(many=True)
+    monthly_sales_data = MonthlySalesDataSerializer(many=True)
+
+
+class SalesTrendSerializer(serializers.Serializer):
+    """Serializer for daily sales trend data"""
+
+    date = serializers.DateField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    percentage_change_from_yesterday = serializers.FloatField()
+    percentage_change_from_30_days_ago = serializers.FloatField()
+
+
+class DashboardSerializer(serializers.Serializer):
+    """Main dashboard serializer combining all data"""
+
+    dashboard_stats = DashboardStatsSerializer()
+
+
+class TopSellingProductSerializer(serializers.Serializer):
+    """Serializer for top selling products"""
+
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    sold_quantity = serializers.IntegerField()
+    revenue = serializers.DecimalField(max_digits=12, decimal_places=2)

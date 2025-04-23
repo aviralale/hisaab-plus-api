@@ -270,9 +270,15 @@ class SaleAdmin(admin.ModelAdmin):
     )
 
     def balance_due(self, obj):
-        balance = obj.balance
+        try:
+            balance = float(obj.balance)
+        except (ValueError, TypeError):
+            balance = 0.0
+
+        formatted_balance = "{:.2f}".format(balance)
+
         if balance > 0:
-            return format_html('<span style="color: red;">{:.2f}</span>', balance)
+            return format_html('<span style="color: red;">{}</span>', formatted_balance)
         return format_html('<span style="color: green;">0.00</span>')
 
     balance_due.short_description = "Balance Due"
