@@ -111,7 +111,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(
         max_length=20, choices=UserRoles.choices, default=UserRoles.STAFF
     )
-
+    profile_picture = models.ImageField(
+        default="user_profile_pictures/default/default.png",
+        upload_to="user_profile_pictures/",
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 

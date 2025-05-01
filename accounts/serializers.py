@@ -136,6 +136,7 @@ class CustomUserSerializer(UserSerializer):
             "is_active",
             "date_joined",
             "last_login",
+            "profile_picture",
         ]
         read_only_fields = ["date_joined", "last_login"]
 

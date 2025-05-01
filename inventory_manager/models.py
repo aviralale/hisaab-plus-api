@@ -63,6 +63,9 @@ class Product(models.Model):
     ]
 
     name = models.CharField(max_length=200)
+    business = models.ForeignKey(
+        Business, on_delete=models.CASCADE, related_name="products"
+    )
     sku = models.CharField(max_length=50, verbose_name="SKU")
     description = models.TextField(blank=True)
     category = models.ForeignKey(
@@ -82,7 +85,7 @@ class Product(models.Model):
     supplier = models.ForeignKey(
         Supplier, on_delete=models.CASCADE, related_name="products"
     )
-    image = models.ImageField(upload_to="products/", blank=True, null=True)
+    image = models.ImageField(upload_to="products_images/", blank=True, null=True)
     barcode = models.CharField(max_length=100, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -192,10 +195,21 @@ class StockEntry(models.Model):
 
 
 class Sale(models.Model):
+    PAYMENT_METHOD_CHOICES = [
+        ("cash", "Cash"),
+        ("card", "Card"),
+        ("mobile_payment", "Mobile Payment"),
+        ("cheque", "Cheque"),
+        ("bank_transfer", "Bank Transfer"),
+        ("credit", "Credit"),
+    ]
     invoice_number = models.CharField(max_length=100)
     customer_name = models.CharField(max_length=200, blank=True)
     sale_date = models.DateTimeField(default=timezone.now)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_method = models.CharField(
+        max_length=20, choices=PAYMENT_METHOD_CHOICES, default="cash"
+    )
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     business = models.ForeignKey(

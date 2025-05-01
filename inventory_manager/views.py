@@ -1,6 +1,6 @@
-from django.db.models import Sum, Count, Q, F
+from django.db.models import Sum, Q, F, ExpressionWrapper, DecimalField
 from django.utils import timezone
-from rest_framework import viewsets, filters, status, serializers
+from rest_framework import viewsets, filters, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -95,44 +95,24 @@ class BusinessQuerySetMixin:
         queryset = super().get_queryset()
         user = self.request.user
 
-        # Superusers can see everything
         if user.is_superuser:
             return queryset
 
-        # Filter by business
-        business = user.business
-        if not business:
-            return queryset.none()  # No business, no data
+        if not user.business:
+            return queryset.none()
 
-        # Apply business filter depending on model
-        model_name = queryset.model.__name__
-
-        if model_name == "Category":
-            # Categories might be shared across businesses or business-specific
-            if hasattr(queryset.model, "business"):
-                return queryset.filter(business=business)
-            return queryset
-
-        elif model_name == "Supplier":
-            return queryset.filter(business=business)
-
-        elif model_name == "Product":
-            return queryset.filter(supplier__business=business)
-
-        elif model_name == "StockEntry":
-            return queryset.filter(product__supplier__business=business)
-
-        elif model_name == "Sale":
-            # This is more complex - sales might need a separate business field
-            # or we filter based on products sold
-            if hasattr(queryset.model, "business"):
-                return queryset.filter(business=business)
-            # Alternatively filter by items if there's a product relationship
+        # Standardize business filtering
+        if hasattr(queryset.model, "business"):
+            return queryset.filter(business=user.business)
+        elif hasattr(queryset.model, "supplier"):
+            return queryset.filter(supplier__business=user.business)
+        elif hasattr(queryset.model, "product"):
+            return queryset.filter(product__supplier__business=user.business)
+        elif hasattr(queryset.model, "items"):
             return queryset.filter(
-                items__product__supplier__business=business
+                items__product__supplier__business=user.business
             ).distinct()
 
-        # Default case
         return queryset.none()
 
 
@@ -200,20 +180,280 @@ class ProductViewSet(BusinessQuerySetMixin, viewsets.ModelViewSet):
         if user.role == "accountant":
             queryset = queryset.filter(is_active=True)
 
+        # Custom query parameters for stock filtering
+        stock_gt = self.request.query_params.get("stock__gt")
+        needs_reorder = self.request.query_params.get("needs_reorder")
+        stock = self.request.query_params.get("stock")
+
+        # Filter for products with stock greater than a value
+        if stock_gt is not None:
+            queryset = queryset.filter(stock__gt=int(stock_gt))
+
+        # Filter for products that need reordering (stock below reorder_level but not 0)
+        if needs_reorder is not None:
+            if needs_reorder.lower() == "true":
+                queryset = queryset.filter(stock__lt=F("reorder_level"), stock__gt=0)
+            elif needs_reorder.lower() == "false":
+                queryset = queryset.filter(
+                    Q(stock__gte=F("reorder_level")) | Q(stock=0)
+                )
+
+        # Filter for products with exact stock level
+        if stock is not None:
+            queryset = queryset.filter(stock=int(stock))
+
         return queryset
 
     @action(detail=True, methods=["get"])
     def stock_entries(self, request, pk=None):
         """List all stock entries for this product"""
         product = self.get_object()
-        entries = product.stock_entries.all()
+        entries = product.stock_entries.all().order_by("-date_added")
+
+        # Optional date range filtering
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        if start_date:
+            entries = entries.filter(date_added__gte=start_date)
+        if end_date:
+            entries = entries.filter(date_added__lte=end_date)
+
+        # Optional entry_type filtering
+        entry_type = request.query_params.get("entry_type")
+        if entry_type:
+            entries = entries.filter(entry_type=entry_type)
+
         serializer = StockEntrySerializer(entries, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=["get"])
+    def stock_history(self, request, pk=None):
+        """List all stock entries for this product with detailed information"""
+        product = self.get_object()
+
+        # Get all stock entries for this product
+        stock_entries = StockEntry.objects.filter(product=product).select_related(
+            "product"
+        )
+
+        # Optional date range filtering
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        if start_date:
+            stock_entries = stock_entries.filter(date_added__gte=start_date)
+        if end_date:
+            stock_entries = stock_entries.filter(date_added__lte=end_date)
+
+        # Optional entry_type filtering
+        entry_type = request.query_params.get("entry_type")
+        if entry_type:
+            stock_entries = stock_entries.filter(entry_type=entry_type)
+
+        # Use the ProductStockEntrySerializer from your serializers.py
+        from .serializers import ProductStockEntrySerializer
+
+        serializer = ProductStockEntrySerializer(stock_entries, many=True)
+
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["get"])
+    def sales_history(self, request, pk=None):
+        """List all sales for this product"""
+        product = self.get_object()
+
+        # Get all sale items for this product
+        sale_items = SaleItem.objects.filter(product=product).select_related("sale")
+
+        # Optional date range filtering
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        if start_date:
+            sale_items = sale_items.filter(sale__sale_date__gte=start_date)
+        if end_date:
+            sale_items = sale_items.filter(sale__sale_date__lte=end_date)
+
+        # Create custom serializer for product sales history
+        class ProductSaleHistorySerializer(serializers.ModelSerializer):
+            sale_date = serializers.DateTimeField(source="sale.sale_date")
+            invoice_number = serializers.CharField(source="sale.invoice_number")
+            customer_name = serializers.CharField(
+                source="sale.customer_name", default=""
+            )
+            subtotal = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+            class Meta:
+                model = SaleItem
+                fields = [
+                    "id",
+                    "sale_id",
+                    "sale_date",
+                    "invoice_number",
+                    "customer_name",
+                    "quantity",
+                    "unit_price",
+                    "subtotal",
+                ]
+
+        serializer = ProductSaleHistorySerializer(sale_items, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["get"])
+    def stats(self, request, pk=None):
+        """Get sales and stock statistics for this product"""
+        product = self.get_object()
+
+        # Get date ranges
+        now = timezone.now()
+        today = now.date()
+        start_of_month = today.replace(day=1)
+        start_of_year = today.replace(month=1, day=1)
+
+        # Get sale items for this product
+        sale_items = SaleItem.objects.filter(product=product)
+
+        # Calculate total units sold and revenue
+        total_sold = (
+            sale_items.aggregate(total=Sum("quantity", default=0))["total"] or 0
+        )
+        total_revenue = (
+            sale_items.aggregate(
+                total=Sum(
+                    ExpressionWrapper(
+                        F("quantity") * F("unit_price"), output_field=DecimalField()
+                    ),
+                    default=0,
+                )
+            )["total"]
+            or 0
+        )
+
+        # Calculate units sold this month and revenue
+        month_sold = (
+            sale_items.filter(sale__sale_date__date__gte=start_of_month).aggregate(
+                total=Sum("quantity", default=0)
+            )["total"]
+            or 0
+        )
+
+        month_revenue = (
+            sale_items.filter(sale__sale_date__date__gte=start_of_month).aggregate(
+                total=Sum(
+                    ExpressionWrapper(
+                        F("quantity") * F("unit_price"), output_field=DecimalField()
+                    ),
+                    default=0,
+                )
+            )["total"]
+            or 0
+        )
+
+        # Get sales trend by month (last 6 months)
+        sales_trend = []
+        for i in range(5, -1, -1):
+            month_start = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+            for _ in range(i - 1):
+                month_start = (month_start - timedelta(days=1)).replace(day=1)
+
+            next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(
+                day=1
+            )
+            month_end = next_month - timedelta(days=1)
+
+            month_name = month_start.strftime("%b")
+
+            # Get units sold and revenue for this month
+            month_data = sale_items.filter(
+                sale__sale_date__date__gte=month_start,
+                sale__sale_date__date__lte=month_end,
+            ).aggregate(
+                units=Sum("quantity", default=0),
+                revenue=Sum(
+                    ExpressionWrapper(
+                        F("quantity") * F("unit_price"), output_field=DecimalField()
+                    ),
+                    default=0,
+                ),
+            )
+
+            sales_trend.append(
+                {
+                    "month": month_name,
+                    "units_sold": month_data["units"] or 0,
+                    "revenue": float(month_data["revenue"] or 0),
+                }
+            )
+
+        # Get stock entries stats
+        stock_entries = StockEntry.objects.filter(product=product)
+
+        # Last purchase info
+        last_purchase = (
+            stock_entries.filter(entry_type="purchase").order_by("-date_added").first()
+        )
+        last_purchase_info = None
+
+        if last_purchase:
+            last_purchase_info = {
+                "date": last_purchase.date_added,
+                "quantity": last_purchase.quantity,
+                "unit_cost": (
+                    float(last_purchase.unit_price)
+                    if last_purchase.unit_price
+                    else None
+                ),
+                "notes": last_purchase.notes,
+            }
+
+        stats = {
+            "product": {
+                "id": product.id,
+                "name": product.name,
+                "sku": product.sku,
+                "current_stock": product.stock,
+                "reorder_level": product.reorder_level,
+                "cost_price": float(product.cost_price),
+                "selling_price": float(product.selling_price),
+                "profit_margin": product.profit_margin,
+            },
+            "sales": {
+                "total_units_sold": total_sold,
+                "total_revenue": float(total_revenue),
+                "month_units_sold": month_sold,
+                "month_revenue": float(month_revenue),
+                "daily_average": round(
+                    total_sold / max((today - product.created_at.date()).days, 1), 2
+                ),
+                "sales_trend": sales_trend,
+            },
+            "stock": {
+                "current_value": float(product.stock_value),
+                "last_purchase": last_purchase_info,
+                "days_until_stockout": (
+                    round(
+                        product.stock
+                        / max(
+                            total_sold
+                            / max((today - product.created_at.date()).days, 1),
+                            0.01,
+                        )
+                    )
+                    if product.stock > 0
+                    else 0
+                ),
+            },
+        }
+
+        return Response(stats)
 
     @action(detail=False, methods=["get"])
     def low_stock(self, request):
         """List all products that need reordering"""
-        products = self.get_queryset().filter(stock__lte=F("reorder_level"))
+        products = self.get_queryset().filter(
+            stock__lte=F("reorder_level"), stock__gt=0
+        )
         serializer = ProductListSerializer(products, many=True)
         return Response(serializer.data)
 
@@ -229,13 +469,8 @@ class StockEntryViewSet(BusinessQuerySetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Verify the product belongs to the user's business
         product = serializer.validated_data.get("product")
-        if product and product.supplier.business != self.request.user.business:
-            raise serializers.ValidationError(
-                "You can only add stock entries for products in your business."
-            )
-
         # Add the current user as the creator
-        serializer.save(created_by=self.request.user.username)
+        serializer.save(created_by=self.request.user)
 
 
 class SaleViewSet(BusinessQuerySetMixin, viewsets.ModelViewSet):
@@ -322,13 +557,21 @@ class DashboardViewSet(viewsets.ViewSet):
             or 0
         )
 
-        # Sales from 24 hours ago
-        twenty_four_hours_ago = now - timedelta(hours=24)
+        # FIX: Sales from current 24-hour period
+        sales_last_24h = (
+            Sale.objects.filter(
+                sales_filter,
+                sale_date__gte=now - timedelta(hours=24),
+            ).aggregate(total=Sum("total_amount", default=0))["total"]
+            or 0
+        )
+
+        # FIX: Sales from previous 24-hour period (24-48 hours ago)
         sales_24h_ago = (
             Sale.objects.filter(
                 sales_filter,
-                sale_date__lt=twenty_four_hours_ago,
-                sale_date__gte=twenty_four_hours_ago - timedelta(hours=24),
+                sale_date__lt=now - timedelta(hours=24),
+                sale_date__gte=now - timedelta(hours=48),
             ).aggregate(total=Sum("total_amount", default=0))["total"]
             or 0
         )
@@ -350,11 +593,11 @@ class DashboardViewSet(viewsets.ViewSet):
                 (float(sales_today) - float(sales_yesterday)) / float(sales_yesterday)
             ) * 100
 
-        # From 24 hours ago
+        # FIX: From previous 24-hour period
         percentage_increase_from_24h_ago = 0
         if sales_24h_ago > 0:
             percentage_increase_from_24h_ago = (
-                (float(sales_today) - float(sales_24h_ago)) / float(sales_24h_ago)
+                (float(sales_last_24h) - float(sales_24h_ago)) / float(sales_24h_ago)
             ) * 100
 
         # From 30 days ago
@@ -423,25 +666,34 @@ class DashboardViewSet(viewsets.ViewSet):
                 }
             )
 
-        # Generate monthly sales data for charts (last 6 months)
+        # FIX: Generate monthly sales data for charts (last 6 months) with clearer logic
         monthly_sales_data = []
-        for i in range(5, -1, -1):
-            # Calculate month start and end dates
-            month_date = today.replace(day=1) - timedelta(days=1)
-            month_date = month_date.replace(day=1)
-            for _ in range(i):
-                month_date = (month_date - timedelta(days=1)).replace(day=1)
+        current_month = today.replace(day=1)  # First day of current month
 
-            month_end = (month_date.replace(day=28) + timedelta(days=4)).replace(
-                day=1
-            ) - timedelta(days=1)
-            month_name = month_date.strftime("%b")
+        for i in range(5, -1, -1):
+            # Calculate first day of the month (going back i months)
+            if i == 0:
+                month_start = current_month
+                month_end = today  # For current month, use today as end date
+            else:
+                # Go back i months
+                month_start = (current_month - timedelta(days=1)).replace(day=1)
+                for _ in range(i - 1):
+                    month_start = (month_start - timedelta(days=1)).replace(day=1)
+
+                # Calculate end of month
+                next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(
+                    day=1
+                )
+                month_end = next_month - timedelta(days=1)
+
+            month_name = month_start.strftime("%b")
 
             # Get sales for this month
             month_sales = (
                 Sale.objects.filter(
                     sales_filter,
-                    sale_date__date__gte=month_date,
+                    sale_date__date__gte=month_start,
                     sale_date__date__lte=month_end,
                 ).aggregate(total=Sum("total_amount", default=0))["total"]
                 or 0
@@ -462,6 +714,7 @@ class DashboardViewSet(viewsets.ViewSet):
                 "total_categories": total_categories,
                 "sales_today": float(sales_today),
                 "sales_yesterday": float(sales_yesterday),
+                "sales_last_24h": float(sales_last_24h),  # Added for clarity
                 "sales_this_month": float(sales_this_month),
                 "inventory_value": float(inventory_value),
                 "percentage_increase_from_yesterday": round(

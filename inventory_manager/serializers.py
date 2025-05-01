@@ -1,16 +1,35 @@
 from rest_framework import serializers
-from .models import Category, Supplier, Product, StockEntry, Sale, SaleItem
+from .models import Category, Supplier, Product, StockEntry, Sale, SaleItem, Business
 from decimal import Decimal
 
 
-# The original serializers remain unchanged
+class BusinessSerializer(serializers.ModelSerializer):
+    """Serializer for business details"""
+
+    class Meta:
+        model = Business
+        fields = [
+            "id",
+            "name",
+            "address",
+            "email",
+            "phone",
+        ]
+
+
 class CategorySerializer(serializers.ModelSerializer):
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
+
     class Meta:
         model = Category
         fields = "__all__"
 
 
 class SupplierSerializer(serializers.ModelSerializer):
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
+
     class Meta:
         model = Supplier
         fields = "__all__"
@@ -21,6 +40,8 @@ class ProductListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.ReadOnlyField(source="supplier.name")
     profit_margin = serializers.ReadOnlyField()
     needs_reorder = serializers.ReadOnlyField()
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
 
     class Meta:
         model = Product
@@ -37,6 +58,8 @@ class ProductListSerializer(serializers.ModelSerializer):
             "profit_margin",
             "needs_reorder",
             "is_active",
+            "business",
+            "business_details",
         ]
 
 
@@ -46,6 +69,8 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     profit_margin = serializers.ReadOnlyField()
     stock_value = serializers.ReadOnlyField()
     needs_reorder = serializers.ReadOnlyField()
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
 
     class Meta:
         model = Product
@@ -71,6 +96,8 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
 
 class StockEntrySerializer(serializers.ModelSerializer):
     product_name = serializers.ReadOnlyField(source="product.name")
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
 
     class Meta:
         model = StockEntry
@@ -85,15 +112,29 @@ class StockEntrySerializer(serializers.ModelSerializer):
 class SaleItemSerializer(serializers.ModelSerializer):
     product_name = serializers.ReadOnlyField(source="product.name")
     subtotal = serializers.ReadOnlyField()
+    payment_method = serializers.SerializerMethodField()
 
     class Meta:
         model = SaleItem
-        fields = ["id", "product", "product_name", "quantity", "unit_price", "subtotal"]
+        fields = [
+            "id",
+            "product",
+            "product_name",
+            "payment_method",
+            "quantity",
+            "unit_price",
+            "subtotal",
+        ]
+
+    def get_payment_method(self, obj):
+        return obj.sale.payment_method if obj.sale else None
 
 
 class SaleSerializer(serializers.ModelSerializer):
     items = SaleItemSerializer(many=True, read_only=True)
     balance = serializers.ReadOnlyField()
+    # Add business details instead of just ID
+    business_details = BusinessSerializer(source="business", read_only=True)
 
     class Meta:
         model = Sale
@@ -134,6 +175,77 @@ class SaleCreateSerializer(serializers.ModelSerializer):
         return sale
 
 
+class ProductStockEntrySerializer(serializers.ModelSerializer):
+    """Serializer for stock entries specific to a product"""
+
+    created_by = serializers.CharField(read_only=True)
+    entry_type_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockEntry
+        fields = [
+            "id",
+            "date_added",
+            "entry_type",
+            "entry_type_display",
+            "quantity",
+            "unit_price",
+            "notes",
+            "created_by",
+        ]
+
+    def get_entry_type_display(self, obj):
+        return dict(StockEntry.ENTRY_TYPE_CHOICES).get(obj.entry_type, obj.entry_type)
+
+
+class ProductSaleItemSerializer(serializers.ModelSerializer):
+    """Serializer for sale items specific to a product"""
+
+    sale_date = serializers.DateTimeField(source="sale.sale_date")
+    invoice_number = serializers.CharField(source="sale.invoice_number")
+    customer_name = serializers.CharField(source="sale.customer_name", default="")
+    payment_status = serializers.SerializerMethodField()
+    # Add business details through sale relationship
+    business_details = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SaleItem
+        fields = [
+            "id",
+            "sale_id",
+            "sale_date",
+            "invoice_number",
+            "customer_name",
+            "quantity",
+            "unit_price",
+            "subtotal",
+            "payment_status",
+            "business_details",
+        ]
+
+    def get_payment_status(self, obj):
+        if obj.sale.paid_amount >= obj.sale.total_amount:
+            return "Paid"
+        elif obj.sale.paid_amount == 0:
+            return "Unpaid"
+        return "Partial"
+
+    def get_business_details(self, obj):
+        if hasattr(obj.sale, "business"):
+            return BusinessSerializer(obj.sale.business).data
+        return None
+
+
+class ProductStatsSerializer(serializers.Serializer):
+    """Serializer for product statistics"""
+
+    product = serializers.DictField()
+    sales = serializers.DictField()
+    stock = serializers.DictField()
+    # Add business details
+    business_details = serializers.DictField()
+
+
 class RecentSaleSerializer(serializers.Serializer):
     """Serializer for recent sales on dashboard"""
 
@@ -142,6 +254,8 @@ class RecentSaleSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     status = serializers.CharField()
     sale_date = serializers.DateTimeField()
+    # Add business details
+    business_details = serializers.DictField(required=False)
 
 
 class LowStockProductSerializer(serializers.Serializer):
@@ -152,6 +266,8 @@ class LowStockProductSerializer(serializers.Serializer):
     sku = serializers.CharField()
     stock = serializers.IntegerField()
     reorder_level = serializers.IntegerField()
+    # Add business details
+    business_details = serializers.DictField(required=False)
 
 
 class MonthlySalesDataSerializer(serializers.Serializer):
@@ -166,6 +282,8 @@ class DashboardStatsSerializer(serializers.Serializer):
 
     # Basic stats
     business_name = serializers.CharField()
+    # Add full business details instead of just name
+    business_details = serializers.DictField()
     total_products = serializers.IntegerField()
     low_stock_count = serializers.IntegerField()
     out_of_stock_products = serializers.IntegerField()
@@ -194,6 +312,8 @@ class SalesTrendSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     percentage_change_from_yesterday = serializers.FloatField()
     percentage_change_from_30_days_ago = serializers.FloatField()
+    # Add business details
+    business_details = serializers.DictField(required=False)
 
 
 class DashboardSerializer(serializers.Serializer):
@@ -209,3 +329,25 @@ class TopSellingProductSerializer(serializers.Serializer):
     name = serializers.CharField()
     sold_quantity = serializers.IntegerField()
     revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+    # Add business details
+    business_details = serializers.DictField(required=False)
+
+
+class ProductSaleHistorySerializer(serializers.ModelSerializer):
+    sale_date = serializers.DateTimeField(source="sale.sale_date")
+    invoice_number = serializers.CharField(source="sale.invoice_number")
+    customer_name = serializers.CharField(source="sale.customer_name", default="")
+    subtotal = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        model = SaleItem
+        fields = [
+            "id",
+            "sale_id",
+            "sale_date",
+            "invoice_number",
+            "customer_name",
+            "quantity",
+            "unit_price",
+            "subtotal",
+        ]
